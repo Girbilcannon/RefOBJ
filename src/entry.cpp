@@ -218,6 +218,7 @@ struct CameraFrame
         cam.position = ToVec3(mumble->CameraPosition);
         cam.forward = NormalizeOr(ToVec3(mumble->CameraFront), MakeVec3(0.0f, 0.0f, 1.0f));
 
+        // Same raw-space convention that fixed RaceFlow Planner:
         // raw GW2/Mumble world-up is +Y.
         Vec3f worldUp = MakeVec3(0.0f, 1.0f, 0.0f);
         Vec3f right = Cross(worldUp, cam.forward);
@@ -231,6 +232,7 @@ struct CameraFrame
         cam.fovRadians = mumble->Context.MapID != 0 ? mumble->Context.Compass.Scale : 0.0f;
 
         // Do not use Compass.Scale as FOV. Parse FOV from Identity JSON is unreliable here,
+        // so start with a stable 65-degree fallback. We can wire a proper FOV source next.
         cam.fovRadians = DegToRad(65.0f);
 
         return cam;
@@ -759,13 +761,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
 extern "C" __declspec(dllexport) AddonDefinition* GetAddonDef()
 {
-    AddonDef.Signature = -8259102;
+    AddonDef.Signature = 0xFF81F9E2;
     AddonDef.APIVersion = NEXUS_API_VERSION;
     AddonDef.Name = "RefOBJ";
     AddonDef.Version.Major = 1;
     AddonDef.Version.Minor = 0;
     AddonDef.Version.Build = 0;
-    AddonDef.Version.Revision = 0;
+    AddonDef.Version.Revision = 1;
     AddonDef.Author = "Girbilcannon.8259";
     AddonDef.Description = "Load Low-Poly 3D models as in-game overlay references.";
     AddonDef.Load = AddonLoad;
@@ -834,7 +836,7 @@ void AddonRender()
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
 
-    if (ImGui::Begin("RefOBJ v1.0.0"))
+    if (ImGui::Begin("RefOBJ v1.0.0.1"))
     {
         ImGui::TextWrapped("Load Low-Poly 3D models as in-game overlay references");
         ImGui::Spacing();
