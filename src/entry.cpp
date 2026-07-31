@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <atomic>
 
 
 #include "nexus/Nexus.h"
@@ -53,6 +54,7 @@ std::string GetConfigPath();
 std::string GetFileNameOnly(const char* path);
 void StoreCurrentTransformForLoadedObject();
 bool ApplyStoredTransformForObject(const std::string& objectName);
+void OnMumbleIdentityUpdated(void* eventArgs);
 
 /* globals */
 AddonDefinition AddonDef = {};
@@ -60,6 +62,11 @@ HMODULE hSelf = nullptr;
 AddonAPI* APIDefs = nullptr;
 NexusLinkData* NexusLink = nullptr;
 Mumble::Data* MumbleLink = nullptr;
+
+static constexpr float DEFAULT_FOV_RADIANS = 0.873f;
+static constexpr const char* MUMBLE_IDENTITY_DATALINK = "DL_MUMBLE_LINK_IDENTITY";
+static constexpr const char* MUMBLE_IDENTITY_UPDATED_EVENT = "EV_MUMBLE_IDENTITY_UPDATED";
+std::atomic<float> g_liveFovRadians = DEFAULT_FOV_RADIANS;
 
 static const char* CONFIG_FILE = "RefOBJ.json";
 static const char* REFERENCE_OBJECT_FOLDER = "ReferenceObjects";
@@ -207,6 +214,18 @@ static float DegToRad(float degrees)
 static float RadToDeg(float radians)
 {
     return radians * 57.295779513082320876f;
+}
+
+static bool IsValidFov(float fovRadians)
+{
+    return std::isfinite(fovRadians) && fovRadians > 0.1f && fovRadians < 3.0f;
+}
+
+void OnMumbleIdentityUpdated(void* eventArgs)
+{
+    const Mumble::Identity* identity = static_cast<const Mumble::Identity*>(eventArgs);
+    if (identity != nullptr && IsValidFov(identity->FOV))
+        g_liveFovRadians.store(identity->FOV, std::memory_order_relaxed);
 }
 
 struct Mat3f
@@ -400,12 +419,7 @@ struct CameraFrame
         cam.right = NormalizeOr(right, MakeVec3(1.0f, 0.0f, 0.0f));
         cam.up = NormalizeOr(Cross(cam.forward, cam.right), MakeVec3(0.0f, 1.0f, 0.0f));
 
-        // Nexus Mumble.h exposes FOV through parsed Identity if available.
-        cam.fovRadians = mumble->Context.MapID != 0 ? mumble->Context.Compass.Scale : 0.0f;
-
-        // Do not use Compass.Scale as FOV. Parse FOV from Identity JSON is unreliable here,
-        // so start with a stable 65-degree fallback. We can wire a proper FOV source next.
-        cam.fovRadians = DegToRad(65.0f);
+        cam.fovRadians = g_liveFovRadians.load(std::memory_order_relaxed);
 
         return cam;
     }
@@ -426,10 +440,13 @@ struct CameraFrame
         if (cameraZ <= g_nearClip)
             return false;
 
-        float focalY = (viewport.y * 0.5f) / std::tan(fovRadians * 0.5f);
+        const float aspect = viewport.x / viewport.y;
+        const float focalScale = 1.0f / std::tan(fovRadians * 0.5f);
+        const float projectedX = cameraX * (focalScale / aspect) / cameraZ;
+        const float projectedY = -cameraY * focalScale / cameraZ;
 
-        outScreen.x = (viewport.x * 0.5f) + ((cameraX * focalY) / cameraZ);
-        outScreen.y = (viewport.y * 0.5f) - ((cameraY * focalY) / cameraZ);
+        outScreen.x = (projectedX + 1.0f) * viewport.x * 0.5f;
+        outScreen.y = (projectedY + 1.0f) * viewport.y * 0.5f;
         outDepth = cameraZ;
 
         if (outScreen.x < -4000.0f || outScreen.x > viewport.x + 4000.0f ||
@@ -1593,7 +1610,7 @@ extern "C" __declspec(dllexport) AddonDefinition* GetAddonDef()
     AddonDef.Version.Major = 1;
     AddonDef.Version.Minor = 1;
     AddonDef.Version.Build = 0;
-    AddonDef.Version.Revision = 21;
+    AddonDef.Version.Revision = 22;
     AddonDef.Author = "Girbilcannon.8259";
     AddonDef.Description = "Load Low-Poly 3D models as in-game overlay references.";
     AddonDef.Load = AddonLoad;
@@ -1613,6 +1630,12 @@ void AddonLoad(AddonAPI* aApi)
     NexusLink = (NexusLinkData*)APIDefs->DataLink.Get("DL_NEXUS_LINK");
     MumbleLink = (Mumble::Data*)APIDefs->DataLink.Get("DL_MUMBLE_LINK");
 
+    g_liveFovRadians.store(DEFAULT_FOV_RADIANS, std::memory_order_relaxed);
+    const Mumble::Identity* identity =
+        (Mumble::Identity*)APIDefs->DataLink.Get(MUMBLE_IDENTITY_DATALINK);
+    OnMumbleIdentityUpdated((void*)identity);
+    APIDefs->Events.Subscribe(MUMBLE_IDENTITY_UPDATED_EVENT, OnMumbleIdentityUpdated);
+
     APIDefs->Renderer.Register(ERenderType_Render, AddonRender);
     APIDefs->Renderer.Register(ERenderType_OptionsRender, AddonOptions);
     APIDefs->WndProc.Register(AddonWndProc);
@@ -1631,6 +1654,8 @@ void AddonLoad(AddonAPI* aApi)
 void AddonUnload()
 {
     SaveConfig();
+
+    APIDefs->Events.Unsubscribe(MUMBLE_IDENTITY_UPDATED_EVENT, OnMumbleIdentityUpdated);
 
     APIDefs->WndProc.Deregister(AddonWndProc);
     APIDefs->Renderer.Deregister(AddonRender);
@@ -1670,7 +1695,7 @@ void AddonRender()
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
 
-    if (ImGui::Begin("RefOBJ v1.1.0.21"))
+    if (ImGui::Begin("RefOBJ v1.1.0.22"))
     {
         ImGui::TextWrapped("Load Low-Poly 3D models as in-game overlay references");
         ImGui::Spacing();
